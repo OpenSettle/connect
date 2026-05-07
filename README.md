@@ -70,7 +70,16 @@ Recommended chain order (lowest to highest cost): **Base → Arbitrum → Polygo
 
 ---
 
-### 3. Create an API key
+### 3. Get your workspace ID
+
+**Settings → General** — your workspace ID is displayed at the top of the page.  
+It looks like `ws_01jt…` and never changes.
+
+Set it as `OPENSETTLE_WORKSPACE_ID` in your server environment. Every API call is scoped to a workspace — the SDK won't work without it.
+
+---
+
+### 4. Create an API key
 
 **Developers → API keys → Create key** (requires re-authentication or passkey session).
 
@@ -81,7 +90,7 @@ Recommended chain order (lowest to highest cost): **Base → Arbitrum → Polygo
 
 ---
 
-### 4. Register a webhook endpoint
+### 5. Register a webhook endpoint
 
 **Developers → Webhooks → Add endpoint**.
 
@@ -110,10 +119,13 @@ npm install @opensettle/sdk
 import { OpenSettle } from "@opensettle/sdk";
 
 const os = new OpenSettle({
-  apiKey: process.env.OPENSETTLE_API_KEY!,
+  apiKey: process.env.OPENSETTLE_API_KEY!,         // sk_live_… or sk_test_…
+  workspaceId: process.env.OPENSETTLE_WORKSPACE_ID!, // ws_01… from Settings → General
   baseUrl: "https://api.opensettle.io",
 });
 ```
+
+> **Both `apiKey` and `workspaceId` are required.** The SDK scopes every request to your workspace — omitting `workspaceId` causes 404s on all API calls.
 
 ---
 
@@ -285,7 +297,7 @@ app.post(
 - [ ] `https://api.opensettle.io/v1/readyz` returns `{ "ok": true, "db": "ok" }`
 - [ ] At least one **verified default wallet** per chain you advertise
 - [ ] Webhook endpoint registered with `payment.confirmed` subscribed
-- [ ] `OPENSETTLE_API_KEY` and `OPENSETTLE_WEBHOOK_SECRET` set in prod env — never committed to git
+- [ ] `OPENSETTLE_API_KEY`, `OPENSETTLE_WORKSPACE_ID`, and `OPENSETTLE_WEBHOOK_SECRET` set in prod env — never committed to git
 - [ ] Webhook handler correctly **rejects** a deliberately bad signature (returns 400)
 - [ ] Webhook handler correctly **accepts** `payment.confirmed` and is **idempotent** (duplicate delivery does not double-fulfil)
 - [ ] Test transaction on **mainnet** ≤ $1 on each chain you advertise — Base first
