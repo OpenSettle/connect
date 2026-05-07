@@ -90,7 +90,17 @@ Set it as `OPENSETTLE_WORKSPACE_ID` in your server environment. Every API call i
 
 ---
 
-### 5. Register a webhook endpoint
+### 5. Create subscription plans
+
+**Subscriptions → Plans → Create plan** — give it a name, price (USD), and billing interval (monthly or yearly).
+
+After saving, the plan detail page shows the **Price ID** (`price_01…`). Copy it — you'll reference it when creating subscription checkouts.
+
+> Chain and token are **not** set on the plan. They are specified per-checkout by your backend (see below). A single plan can be paid in USDC on Base or USDT on Polygon — it's your choice at checkout time.
+
+---
+
+### 6. Register a webhook endpoint
 
 **Developers → Webhooks → Add endpoint**.
 
@@ -119,7 +129,7 @@ npm install @opensettle/sdk
 import { OpenSettle } from "@opensettle/sdk";
 
 const os = new OpenSettle({
-  apiKey: process.env.OPENSETTLE_API_KEY!,         // sk_live_… or sk_test_…
+  apiKey: process.env.OPENSETTLE_API_KEY!,          // sk_live_… or sk_test_…
   workspaceId: process.env.OPENSETTLE_WORKSPACE_ID!, // ws_01… from Settings → General
   baseUrl: "https://api.opensettle.io",
 });
@@ -174,24 +184,102 @@ return Response.redirect(`https://opensettle.io${checkout.hostedUrl}`, 303);
 
 ---
 
-### Subscription
+### Subscription (SDK)
 
-Reference a `priceId` from your product catalogue instead of creating an invoice.
+Reference a `priceId` from your plans instead of creating an invoice.
 
 ```ts
-// Prices are created in the dashboard: Products → New product → Add price
+// Prices are created in the dashboard: Subscriptions → Plans → Create plan
 const checkout = await os.checkouts.create({
   mode: "subscription",
   customerId: customer.id,
-  priceId: "price_xxxxxxxxxx",    // from Dashboard → Products
+  priceId: "price_xxxxxxxxxx",    // from Dashboard → Plans
+  chain: "base",                  // required for subscription mode
+  token: "USDC",                  // required for subscription mode
   successUrl: "https://your-domain.com/subscriptions/activated",
   cancelUrl:  "https://your-domain.com/subscriptions/cancel",
+  metadata: { userId: "usr_123", planId: "pro" }, // propagated to subscription + webhook events
 });
 
 return Response.redirect(`https://opensettle.io${checkout.hostedUrl}`, 303);
 ```
 
+> **`chain` and `token` are required for `mode: "subscription"`** — unlike one-off payments where they are set on the invoice, subscription checkouts need them explicitly.
+
+> **Pass `metadata`** with any identifiers you need to recover in webhook handlers (e.g. your internal `userId`, `planId`). This metadata is copied to the subscription record and included in all subscription lifecycle webhook events.
+
 Link customers to their self-service portal at `https://opensettle.io/portal/<your-slug>` to manage subscriptions and view invoices.
+
+---
+
+### Subscription (no SDK — Vercel Edge / Cloudflare Workers)
+
+If you are running in an edge runtime that can't use Node.js packages, call the REST API directly.
+
+```ts
+// POST /api/create-checkout — Vercel Edge Function example
+export const config = { runtime: "edge" };
+
+const OS_API_KEY   = process.env.OPENSETTLE_API_KEY!;
+const OS_BASE_URL  = process.env.OPENSETTLE_BASE_URL ?? "https://api.opensettle.io";
+const OS_WORKSPACE = process.env.OPENSETTLE_WORKSPACE_ID!;
+
+export default async function handler(req: Request) {
+  const { priceId, customerEmail, userId, planId, attemptId } = await req.json();
+
+  // Idempotency-Key must be STABLE across retries of the same checkout intent.
+  // Generate `attemptId` on the client (e.g. crypto.randomUUID()) once per click
+  // and pass it through. Do NOT bake `Date.now()` into the key — it changes on
+  // every retry and defeats the point.
+  const idempotencyKey = `checkout-${userId}-${planId}-${attemptId}`;
+
+  const res = await fetch(
+    `${OS_BASE_URL}/v1/workspaces/${OS_WORKSPACE}/checkouts`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OS_API_KEY}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,  // required
+      },
+      body: JSON.stringify({
+        mode: "subscription",
+        priceId,
+        customerEmail,            // OpenSettle finds or creates the customer by email
+        chain: "base",            // required for subscription mode
+        token: "USDC",            // required for subscription mode
+        successUrl: "https://your-domain.com/billing?checkout=success",
+        cancelUrl:  "https://your-domain.com/billing?checkout=cancel",
+        metadata: { userId, planId }, // recovered in webhook events
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.json();
+    return Response.json({ error: "Failed to create checkout", detail: err }, { status: 502 });
+  }
+
+  const data = await res.json();
+  // Response shape: { checkout: { hostedUrl: "/checkout/<token>", ... } }
+  const hostedPath: string = data.checkout?.hostedUrl ?? "";
+  if (!hostedPath) {
+    return Response.json({ error: "Missing hostedUrl in response" }, { status: 502 });
+  }
+
+  // Return the full URL — prepend the OpenSettle host to the path
+  return Response.json({ url: `https://opensettle.io${hostedPath}` });
+}
+```
+
+**Key differences from the SDK flow:**
+
+| Detail | Value |
+|--------|-------|
+| `Idempotency-Key` header | Required on every mutating request |
+| `customerEmail` | Pass instead of `customerId` — OpenSettle finds or creates the customer |
+| `chain` + `token` | Always required for `mode: "subscription"` |
+| Response field | `data.checkout.hostedUrl` (a path — prepend `https://opensettle.io`) |
 
 ---
 
@@ -217,13 +305,17 @@ function verifyOpenSettleWebhook(
     .update(`${ts}.${rawBody}`)
     .digest("hex");
 
-  // Use timingSafeEqual to prevent timing attacks
-  if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+  // timingSafeEqual throws if the two buffers differ in length — pre-check.
+  // SHA-256 hex is always 64 chars; anything else is malformed up front.
+  if (sig.length !== expected.length) {
+    throw new Error("signature mismatch");
+  }
+  if (!timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) {
     throw new Error("signature mismatch");
   }
 
   // Reject webhooks older than 5 minutes
-  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) {
+  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) {
     throw new Error("webhook is stale");
   }
 }
@@ -283,18 +375,51 @@ app.post(
 | `payment.confirmed` | On-chain confirmation received — fulfil the order |
 | `payment.failed` | Payment attempt failed — notify buyer |
 | `payment.refunded` | Refund confirmed on-chain — revoke / adjust access |
-| `subscription.created` | New subscription started |
-| `subscription.renewed` | Recurring payment confirmed |
+| `subscription.created` | New subscription started — activate access |
+| `subscription.trial_ended` | Trial finished and the first paid period has begun — billing has started |
+| `subscription.renewed` | Recurring payment confirmed — extend access period |
 | `subscription.past_due` | Renewal payment failed — subscriber will retry |
-| `subscription.canceled` | Subscription cancelled |
+| `subscription.canceled` | Subscription cancelled — revoke access |
 | `invoice.paid` | Invoice paid |
 | `invoice.past_due` | Invoice overdue |
+
+### Subscription event payload shapes
+
+Subscription events come in two shapes depending on whether they carry the full subscription object or just a reference.
+
+**Full object events** (`subscription.created`) — `event.data.subscription` is the complete record:
+
+```ts
+// event.type === "subscription.created"
+const sub      = event.data.subscription;  // full subscription object
+const metadata = sub.metadata as Record<string, string>;
+const userId   = metadata.userId;          // from checkout metadata
+const planId   = metadata.planId;
+// sub.id, sub.priceId, sub.currentPeriodEnd, sub.status, …
+```
+
+**Lifecycle events** (`subscription.trial_ended`, `subscription.renewed`, `subscription.past_due`, `subscription.canceled`) — `event.data` is a minimal reference that still includes `metadata`:
+
+```ts
+// event.type === "subscription.trial_ended" | "subscription.renewed"
+//             | "subscription.past_due"     | "subscription.canceled"
+const data = event.data as {
+  subscriptionId: string;
+  nextBillingDate?: string; // present on subscription.renewed
+  reason?: string;          // present on subscription.canceled (e.g. "period_end")
+  metadata: Record<string, string>;
+};
+const userId = data.metadata.userId;   // from checkout metadata
+const planId = data.metadata.planId;
+```
+
+> **Why metadata propagates:** When you pass `metadata` to the checkout, OpenSettle copies it to the subscription record. Every lifecycle event for that subscription includes this metadata — so you can recover `userId`, `planId`, or any other identifiers without a database lookup.
 
 ---
 
 ## Go-live checklist
 
-- [ ] `https://api.opensettle.io/v1/readyz` returns `{ "ok": true, "db": "ok" }`
+- [ ] `https://api.opensettle.io/v1/readyz` returns `200` with a body where `ok === true` and `db === "ok"` (the response includes additional diagnostic fields — match those two keys, not the whole body)
 - [ ] At least one **verified default wallet** per chain you advertise
 - [ ] Webhook endpoint registered with `payment.confirmed` subscribed
 - [ ] `OPENSETTLE_API_KEY`, `OPENSETTLE_WORKSPACE_ID`, and `OPENSETTLE_WEBHOOK_SECRET` set in prod env — never committed to git
