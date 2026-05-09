@@ -1,6 +1,6 @@
 # OpenSettle — Integration Guide
 
-Accept on-chain stablecoin payments on Base, Ethereum, Polygon, and Arbitrum.  
+Accept on-chain stablecoin payments on Base, Ethereum, Polygon, Arbitrum, Solana, and Tron.  
 Non-custodial: funds land directly in your settlement wallet — OpenSettle never holds them.
 
 [![npm](https://img.shields.io/npm/v/@opensettle/sdk?label=%40opensettle%2Fsdk&color=black)](https://www.npmjs.com/package/@opensettle/sdk)
@@ -32,7 +32,7 @@ redirect buyer   ←   successUrl redirect
 ## Before you start
 
 - [ ] OpenSettle account at [opensettle.io](https://opensettle.io)
-- [ ] A verified EVM settlement wallet (Base recommended for v1)
+- [ ] A verified settlement wallet on the chain you want to bill in (Base recommended for first-time integrators)
 - [ ] Node.js ≥ 18 on your server
 - [ ] A public HTTPS endpoint for receiving webhooks
 
@@ -53,20 +53,22 @@ The workspace **slug** you choose becomes your customer portal URL:
 
 ### 2. Connect a settlement wallet
 
-**Settings → Wallets → Connect wallet** → pick your chain.
+**Wallets → Connect wallet** → pick your chain.
 
-The wallet picker offers four options: **WalletConnect · Binance · OKX · Coinbase** — all routed through WalletConnect v2 (AppKit). Sign the EIP-191 ownership challenge. Mark one wallet as **Default** per chain.
+For EVM chains, the wallet picker offers four routes: **WalletConnect · Binance · OKX · Coinbase** — all via WalletConnect v2 (AppKit). Sign the EIP-191 ownership challenge.  
+Solana wallets sign an Ed25519 challenge; Tron wallets sign a TIP-191 challenge.  
+Mark one wallet as **Default** per chain.
 
-Recommended chain order (lowest to highest cost): **Base → Arbitrum → Polygon → Ethereum**
+Recommended chain order (lowest to highest gas): **Solana → Tron → Base → Arbitrum → Polygon → Ethereum**
 
 | Chain | Token | Notes |
 |-------|-------|-------|
-| Base | USDC, USDT | Start here — lowest gas, fastest finality |
+| Solana | USDC | Sub-second finality, near-zero fee |
+| Tron | USDT | TRC-20 — popular for cross-border USDT |
+| Base | USDC, USDT | Lowest-gas EVM, fast finality |
 | Arbitrum | USDC, USDT | L2, fast — good alongside Base |
 | Polygon | USDC, USDT | High throughput, low fee |
 | Ethereum | USDC, USDT | Add once volume justifies gas cost |
-
-> Solana and Tron are not yet available.
 
 ---
 
@@ -102,14 +104,17 @@ After saving, the plan detail page shows the **Price ID** (`price_01…`). Copy 
 
 ### 6. Register a webhook endpoint
 
-**Developers → Webhooks → Add endpoint**.
+**Webhooks → Add endpoint**.
 
-- **URL:** `https://your-domain.com/webhooks/opensettle` (must be HTTPS, publicly reachable)
-- **Events:** subscribe to at minimum `payment.confirmed`, `payment.failed`, `payment.refunded`
+- **URL:** `https://your-domain.com/webhooks/opensettle` (must be HTTPS, publicly reachable; localhost / RFC1918 / cloud-metadata IPs are blocked by the SSRF guard).
+- **Events:**
+  - One-off payments: subscribe to `payment.confirmed`, `payment.failed`, `payment.refunded`.
+  - Subscriptions: subscribe to `subscription.created` (activation), plus `subscription.renewed`, `subscription.past_due`, `subscription.canceled`.
+- Hit **Send test event** after saving — you should see a 200 from your endpoint in the deliveries list before you take any real money.
 - The **signing secret** is shown once after creation — copy it immediately.
 - Set it as `OPENSETTLE_WEBHOOK_SECRET` in your server environment.
 
-If you lose the signing secret, delete the endpoint and create a new one.
+If you lose the signing secret, rotate it from the endpoint detail page (a grace window keeps the old secret valid while you redeploy).
 
 ---
 
@@ -153,7 +158,7 @@ const customer = await os.customers.create({
 // 2. Create an invoice — this is where you specify the amount and chain
 const invoice = await os.invoices.create({
   customerId: customer.id,
-  chain: "base",           // "base" | "ethereum" | "polygon" | "arbitrum"
+  chain: "base",           // "base" | "ethereum" | "polygon" | "arbitrum" | "solana" | "tron"
   token: "USDC",           // "USDC" | "USDT"
   lineItems: [
     {
@@ -385,35 +390,44 @@ app.post(
 
 ### Subscription event payload shapes
 
-Subscription events come in two shapes depending on whether they carry the full subscription object or just a reference.
+Subscription events come in two shapes depending on the trigger:
 
-**Full object events** (`subscription.created`) — `event.data.subscription` is the complete record:
+- **Full object** — `event.data.subscription` is the complete record.
+  - Fired by `subscription.created` and by `subscription.canceled` when an admin/customer cancels immediately.
+- **Reference** — `event.data` carries `subscriptionId` plus a few flat fields.
+  - Fired by `subscription.trial_ended`, `subscription.renewed`, `subscription.past_due`, and `subscription.canceled` when the cancellation is system-driven (period-end or dunning).
 
-```ts
-// event.type === "subscription.created"
-const sub      = event.data.subscription;  // full subscription object
-const metadata = sub.metadata as Record<string, string>;
-const userId   = metadata.userId;          // from checkout metadata
-const planId   = metadata.planId;
-// sub.id, sub.priceId, sub.currentPeriodEnd, sub.status, …
-```
-
-**Lifecycle events** (`subscription.trial_ended`, `subscription.renewed`, `subscription.past_due`, `subscription.canceled`) — `event.data` is a minimal reference that still includes `metadata`:
+Read defensively from both locations — the field may be on `data.subscription.metadata` or directly on `data.metadata`:
 
 ```ts
-// event.type === "subscription.trial_ended" | "subscription.renewed"
-//             | "subscription.past_due"     | "subscription.canceled"
-const data = event.data as {
-  subscriptionId: string;
-  nextBillingDate?: string; // present on subscription.renewed
-  reason?: string;          // present on subscription.canceled (e.g. "period_end")
-  metadata: Record<string, string>;
+type SubEvent = {
+  type: string;
+  data: {
+    // full-object form
+    subscription?: {
+      id: string;
+      priceId: string;
+      currentPeriodEnd: string;
+      status: string;
+      metadata?: Record<string, string>;
+    };
+    // reference form
+    subscriptionId?: string;
+    nextBillingDate?: string;     // subscription.renewed
+    reason?: string;               // subscription.canceled — "period_end" | "dunning_exhausted" | …
+    metadata?: Record<string, string>;
+  };
 };
-const userId = data.metadata.userId;   // from checkout metadata
-const planId = data.metadata.planId;
+
+function readSubscriptionRef(event: SubEvent) {
+  const sub = event.data.subscription;
+  const subscriptionId = sub?.id ?? event.data.subscriptionId ?? null;
+  const metadata = sub?.metadata ?? event.data.metadata ?? {};
+  return { subscriptionId, metadata };
+}
 ```
 
-> **Why metadata propagates:** When you pass `metadata` to the checkout, OpenSettle copies it to the subscription record. Every lifecycle event for that subscription includes this metadata — so you can recover `userId`, `planId`, or any other identifiers without a database lookup.
+> **Why metadata propagates:** When you pass `metadata` to the checkout, OpenSettle copies it to the subscription record. Most lifecycle events include that metadata so you can recover `userId`, `planId`, etc. without a database lookup. **Caveat:** the dunning-exhausted `subscription.canceled` is dispatched without metadata — if you must react to it, key off `subscriptionId` against your own table rather than relying on metadata being present.
 
 ---
 
