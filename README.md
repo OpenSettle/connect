@@ -1,6 +1,11 @@
 # OpenSettle — Integration Guide
 
-Accept on-chain stablecoin payments on Base, Ethereum, Polygon, Arbitrum, Solana, and Tron.  
+Accept on-chain stablecoin payments. Hosted checkout settles on the EVM chains
+**Base, Ethereum, Polygon, and Arbitrum**. **Solana and Tron** are wired at the
+API + wallet-verification layer — the chain reader detects inbound SPL / TRC-20
+deposits to verified wallets — but the customer-facing hosted checkout page is
+currently EVM-only.
+
 Non-custodial: funds land directly in your settlement wallet — OpenSettle never holds them.
 
 [![npm](https://img.shields.io/npm/v/@opensettle/sdk?label=%40opensettle%2Fsdk&color=black)](https://www.npmjs.com/package/@opensettle/sdk)
@@ -59,16 +64,18 @@ For EVM chains, the wallet picker offers four routes: **WalletConnect · Binance
 Solana wallets sign an Ed25519 challenge; Tron wallets sign a TIP-191 challenge.  
 Mark one wallet as **Default** per chain.
 
-Recommended chain order (lowest to highest gas): **Solana → Tron → Base → Arbitrum → Polygon → Ethereum**
+Recommended hosted-checkout chain order (lowest to highest gas): **Base → Arbitrum → Polygon → Ethereum**
 
-| Chain | Token | Notes |
-|-------|-------|-------|
-| Solana | USDC | Sub-second finality, near-zero fee |
-| Tron | USDT | TRC-20 — popular for cross-border USDT |
-| Base | USDC, USDT | Lowest-gas EVM, fast finality |
-| Arbitrum | USDC, USDT | L2, fast — good alongside Base |
-| Polygon | USDC, USDT | High throughput, low fee |
-| Ethereum | USDC, USDT | Add once volume justifies gas cost |
+| Chain | Token | Hosted checkout | Notes |
+|-------|-------|-----------------|-------|
+| Base | USDC, USDT | Yes | Lowest-gas EVM, fast finality — recommended for first integration |
+| Arbitrum | USDC, USDT | Yes | L2, fast — good alongside Base |
+| Polygon | USDC, USDT | Yes | High throughput, low fee |
+| Ethereum | USDC, USDT | Yes | Add once volume justifies gas cost |
+| Solana | USDC | Inbound only | Sub-second finality, near-zero fee. Wallet verification + deposit detection ship today; hosted checkout page is EVM-only. |
+| Tron | USDT | Inbound only | TRC-20 — popular for cross-border USDT. Wallet verification + deposit detection ship today; hosted checkout page is EVM-only. |
+
+> **Solana / Tron caveat.** You can verify a Solana or Tron settlement wallet today, and any inbound SPL (USDC on Solana) or TRC-20 (USDT on Tron) transfer to that wallet is detected and recorded as a payment. The customer-facing **hosted checkout page** does not yet render Solana or Tron — direct your buyers to an EVM chain for checkout-driven flows.
 
 ---
 
@@ -109,7 +116,7 @@ After saving, the plan detail page shows the **Price ID** (`price_01…`). Copy 
 - **URL:** `https://your-domain.com/webhooks/opensettle` (must be HTTPS, publicly reachable; localhost / RFC1918 / cloud-metadata IPs are blocked by the SSRF guard).
 - **Events:**
   - One-off payments: subscribe to `payment.confirmed`, `payment.failed`, `payment.refunded`.
-  - Subscriptions: subscribe to `subscription.created` (activation), plus `subscription.renewed`, `subscription.past_due`, `subscription.canceled`.
+  - Subscriptions: subscribe to `subscription.created` (fires when the subscription is created — active or trialing), plus `subscription.renewed`, `subscription.past_due`, `subscription.canceled`. Add `subscription.trial_ended` if you offer trials.
 - Hit **Send test event** after saving — you should see a 200 from your endpoint in the deliveries list before you take any real money.
 - The **signing secret** is shown once after creation — copy it immediately.
 - Set it as `OPENSETTLE_WEBHOOK_SECRET` in your server environment.
@@ -158,7 +165,9 @@ const customer = await os.customers.create({
 // 2. Create an invoice — this is where you specify the amount and chain
 const invoice = await os.invoices.create({
   customerId: customer.id,
-  chain: "base",           // "base" | "ethereum" | "polygon" | "arbitrum" | "solana" | "tron"
+  chain: "base",           // hosted checkout: "base" | "ethereum" | "polygon" | "arbitrum"
+                           // (the API also accepts "solana" | "tron" for direct-deposit
+                           //  flows, but those invoices won't render a hosted checkout page)
   token: "USDC",           // "USDC" | "USDT"
   lineItems: [
     {
@@ -463,3 +472,7 @@ Top-level redirect (`303`) is preferred over iframe embedding.
 - Dashboard: [opensettle.io](https://opensettle.io)
 - API status: [api.opensettle.io/v1/readyz](https://api.opensettle.io/v1/readyz)
 - Issues: [github.com/OpenSettle/connect/issues](https://github.com/OpenSettle/connect/issues)
+
+## License
+
+Code snippets in this guide are released under [MIT](https://opensource.org/licenses/MIT) — copy them into your own backend without restriction.
