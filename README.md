@@ -68,14 +68,14 @@ Recommended hosted-checkout chain order (lowest to highest gas): **Base → Arbi
 
 | Chain | Token | Hosted checkout | Notes |
 |-------|-------|-----------------|-------|
-| Base | USDC, USDT | Yes | Lowest-gas EVM, fast finality — recommended for first integration |
+| Base | USDC | Yes | Lowest-gas EVM, fast finality — recommended for first integration. USDC only; no canonical USDT on Base. |
 | Arbitrum | USDC, USDT | Yes | L2, fast — good alongside Base |
 | Polygon | USDC, USDT | Yes | High throughput, low fee |
 | Ethereum | USDC, USDT | Yes | Add once volume justifies gas cost |
-| Solana | USDC | Inbound only | Sub-second finality, near-zero fee. Wallet verification + deposit detection ship today; hosted checkout page is EVM-only. |
+| Solana | USDC, USDT | Inbound only | Sub-second finality, near-zero fee. Wallet verification + deposit detection ship today; hosted checkout page is EVM-only. |
 | Tron | USDT | Inbound only | TRC-20 — popular for cross-border USDT. Wallet verification + deposit detection ship today; hosted checkout page is EVM-only. |
 
-> **Solana / Tron caveat.** You can verify a Solana or Tron settlement wallet today, and any inbound SPL (USDC on Solana) or TRC-20 (USDT on Tron) transfer to that wallet is detected and recorded as a payment. The customer-facing **hosted checkout page** does not yet render Solana or Tron — direct your buyers to an EVM chain for checkout-driven flows.
+> **Solana / Tron caveat.** You can verify a Solana or Tron settlement wallet today, and any inbound SPL (USDC or USDT on Solana) or TRC-20 (USDT on Tron) transfer to that wallet is detected and recorded as a payment. The customer-facing **hosted checkout page** does not yet render Solana or Tron — direct your buyers to an EVM chain for checkout-driven flows.
 
 ---
 
@@ -147,7 +147,7 @@ const os = new OpenSettle({
 });
 ```
 
-> **Both `apiKey` and `workspaceId` are required.** The SDK scopes every request to your workspace — omitting `workspaceId` causes 404s on all API calls.
+> **Both `apiKey` and `workspaceId` are required.** The SDK scopes every request to your workspace — omitting `workspaceId` throws at client initialization, before any request is sent.
 
 ---
 
@@ -173,7 +173,7 @@ const invoice = await os.invoices.create({
     {
       description: "Pro plan – 1 month",
       quantity: 1,
-      unitAmountMinor: 10_000000, // 10 USDC — always integers, 6 decimal places
+      unitAmountMinor: 1000, // $10.00 — integer minor units (USD cents)
     },
   ],
   dueInDays: 0,            // due immediately
@@ -190,11 +190,11 @@ const checkout = await os.checkouts.create({
 });
 
 // 4. Redirect the buyer to the OpenSettle-hosted checkout page
-return Response.redirect(`https://opensettle.io${checkout.hostedUrl}`, 303);
+return Response.redirect(checkout.hostedUrl, 303); // hostedUrl is already an absolute URL
 ```
 
-> **Amounts are always integers.** USDC and USDT both use 6 decimal places.  
-> 1 USDC = `1_000000` · 10 USDC = `10_000000` · 0.50 USDC = `500000`
+> **Amounts are always integer minor units (USD cents).** `unitAmountMinor` and `amountMinor` are in 1/100 of a dollar; the API converts to on-chain token base units for you.  
+> $1.00 = `100` · $10.00 = `1000` · $0.50 = `50`
 
 ---
 
@@ -215,7 +215,7 @@ const checkout = await os.checkouts.create({
   metadata: { userId: "usr_123", planId: "pro" }, // propagated to subscription + webhook events
 });
 
-return Response.redirect(`https://opensettle.io${checkout.hostedUrl}`, 303);
+return Response.redirect(checkout.hostedUrl, 303); // hostedUrl is already an absolute URL
 ```
 
 > **`chain` and `token` are required for `mode: "subscription"`** — unlike one-off payments where they are set on the invoice, subscription checkouts need them explicitly.
@@ -275,14 +275,14 @@ export default async function handler(req: Request) {
   }
 
   const data = await res.json();
-  // Response shape: { checkout: { hostedUrl: "/checkout/<token>", ... } }
-  const hostedPath: string = data.checkout?.hostedUrl ?? "";
-  if (!hostedPath) {
+  // Response shape: { checkout: { hostedUrl: "https://opensettle.io/checkout/<token>", ... } }
+  const hostedUrl: string = data.checkout?.hostedUrl ?? "";
+  if (!hostedUrl) {
     return Response.json({ error: "Missing hostedUrl in response" }, { status: 502 });
   }
 
-  // Return the full URL — prepend the OpenSettle host to the path
-  return Response.json({ url: `https://opensettle.io${hostedPath}` });
+  // hostedUrl is already an absolute URL — return it as-is.
+  return Response.json({ url: hostedUrl });
 }
 ```
 
@@ -293,7 +293,7 @@ export default async function handler(req: Request) {
 | `Idempotency-Key` header | Required on every mutating request |
 | `customerEmail` | Pass instead of `customerId` — OpenSettle finds or creates the customer |
 | `chain` + `token` | Always required for `mode: "subscription"` |
-| Response field | `data.checkout.hostedUrl` (a path — prepend `https://opensettle.io`) |
+| Response field | `data.checkout.hostedUrl` (an absolute URL — use as-is) |
 
 ---
 
