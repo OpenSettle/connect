@@ -49,8 +49,8 @@ redirect buyer   ←   successUrl redirect
 
 Sign in at [opensettle.io/login](https://opensettle.io/login) → **Org switcher → Create workspace**.
 
-The workspace **slug** you choose becomes your customer portal URL:  
-`https://opensettle.io/portal/<slug>`
+The workspace **slug** you choose is how customers reach their portal:  
+`https://opensettle.io/portal/login?slug=<slug>`
 
 > **Enroll a passkey first.** Go to **Settings → Security** and add a passkey before touching wallets or API keys. Several sensitive actions require either a passkey session or a login within the last 5 minutes — you'll hit this gate repeatedly without one.
 
@@ -222,7 +222,7 @@ return Response.redirect(checkout.hostedUrl, 303); // hostedUrl is already an ab
 
 > **Pass `metadata`** with any identifiers you need to recover in webhook handlers (e.g. your internal `userId`, `planId`). This metadata is copied to the subscription record and included in all subscription lifecycle webhook events.
 
-Link customers to their self-service portal at `https://opensettle.io/portal/<your-slug>` to manage subscriptions and view invoices.
+Link customers to their self-service portal at `https://opensettle.io/portal/login?slug=<your-slug>` to manage subscriptions and view invoices.
 
 ---
 
