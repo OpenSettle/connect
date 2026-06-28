@@ -84,7 +84,7 @@ Recommended hosted-checkout chain order (lowest to highest gas): **Base → Arbi
 **Settings → General** — your workspace ID is displayed at the top of the page.  
 It looks like `ws_01jt…` and never changes.
 
-Set it as `OPENSETTLE_WORKSPACE_ID` in your server environment. Every API call is scoped to a workspace — the SDK won't work without it.
+Set it as `OPENSETTLE_WORKSPACE` in your server environment. Every API call is scoped to a workspace — the SDK won't work without it.
 
 ---
 
@@ -95,7 +95,7 @@ Set it as `OPENSETTLE_WORKSPACE_ID` in your server environment. Every API call i
 - Give the key a name (e.g. `prod-server`).
 - Choose **Restricted** permissions for standard integrations.
 - The secret is shown **once** — copy it to a password manager immediately.
-- Set it as `OPENSETTLE_API_KEY` in your server environment.
+- Set it as `OPENSETTLE_KEY` in your server environment.
 
 ---
 
@@ -141,8 +141,8 @@ npm install @opensettle/sdk
 import { OpenSettle } from "@opensettle/sdk";
 
 const os = new OpenSettle({
-  apiKey: process.env.OPENSETTLE_API_KEY!,          // sk_live_… or sk_test_…
-  workspaceId: process.env.OPENSETTLE_WORKSPACE_ID!, // ws_01… from Settings → General
+  apiKey: process.env.OPENSETTLE_KEY!,          // sk_live_… or sk_test_…
+  workspaceId: process.env.OPENSETTLE_WORKSPACE!, // ws_01… from Settings → General
   baseUrl: "https://api.opensettle.io",
 });
 ```
@@ -234,9 +234,9 @@ If you are running in an edge runtime that can't use Node.js packages, call the 
 // POST /api/create-checkout — Vercel Edge Function example
 export const config = { runtime: "edge" };
 
-const OS_API_KEY   = process.env.OPENSETTLE_API_KEY!;
+const OS_API_KEY   = process.env.OPENSETTLE_KEY!;
 const OS_BASE_URL  = process.env.OPENSETTLE_BASE_URL ?? "https://api.opensettle.io";
-const OS_WORKSPACE = process.env.OPENSETTLE_WORKSPACE_ID!;
+const OS_WORKSPACE = process.env.OPENSETTLE_WORKSPACE!;
 
 export default async function handler(req: Request) {
   const { priceId, customerEmail, userId, planId, attemptId } = await req.json();
@@ -445,7 +445,7 @@ function readSubscriptionRef(event: SubEvent) {
 - [ ] `https://api.opensettle.io/v1/readyz` returns `200` with a body where `ok === true` and `db === "ok"` (the response includes additional diagnostic fields — match those two keys, not the whole body)
 - [ ] At least one **verified default wallet** per chain you advertise
 - [ ] Webhook endpoint registered with `payment.confirmed` subscribed
-- [ ] `OPENSETTLE_API_KEY`, `OPENSETTLE_WORKSPACE_ID`, and `OPENSETTLE_WEBHOOK_SECRET` set in prod env — never committed to git
+- [ ] `OPENSETTLE_KEY`, `OPENSETTLE_WORKSPACE`, and `OPENSETTLE_WEBHOOK_SECRET` set in prod env — never committed to git
 - [ ] Webhook handler correctly **rejects** a deliberately bad signature (returns 400)
 - [ ] Webhook handler correctly **accepts** `payment.confirmed` and is **idempotent** (duplicate delivery does not double-fulfil)
 - [ ] Test transaction on **mainnet** ≤ $1 on each chain you advertise — Base first
